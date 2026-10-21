@@ -95,6 +95,14 @@ textarea{width:100%;font:500 15px/1.5 var(--f-mono);padding:10px 12px;border:1px
 .num{font:700 26px/1 var(--f-display);font-variant-numeric:tabular-nums}
 .side{display:grid;gap:14px}
 @media (max-width:620px){.read-grid{grid-template-columns:minmax(0,1fr)}.big{font-size:46px}}
+select,input[type=text],input[type=number]{font:500 15px/1.2 var(--f-body);padding:11px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);min-height:44px;max-width:100%;min-width:0}
+input[type=number]{width:5.5em}
+.lib{display:grid;gap:12px;padding:14px;border:1px solid var(--line);border-radius:6px}
+.lib .row{align-items:stretch}
+label.btn{display:inline-flex;align-items:center;justify-content:center}
+.fld{display:grid;gap:4px;font-size:13px;color:var(--muted)}
+.imp{display:grid;gap:12px;padding-top:12px;border-top:1px solid var(--line)}
+.imp[hidden]{display:none}
 /* Klaviatur */
 .board{background:var(--case);padding:10px 10px 12px;border-radius:6px 6px 10px 10px}
 .felt{height:7px;background:var(--felt);margin:0 0 8px;border-radius:1px}
@@ -141,6 +149,27 @@ textarea{width:100%;font:500 15px/1.5 var(--f-mono);padding:10px 12px;border:1px
   </section>
 
   <section class="card" id="m-song" hidden>
+    <div class="lib">
+      <span class="lbl">Meine Stücke</span>
+      <div class="row">
+        <select id="pieceSel" aria-label="Gespeichertes Stück wählen"></select>
+        <button class="btn" id="bDel">Löschen</button>
+      </div>
+      <div class="row">
+        <label class="btn" for="fileIn">Datei laden (MusicXML oder MIDI)</label>
+        <input type="file" id="fileIn" hidden>
+      </div>
+      <p class="small" id="fileMsg">Die Datei wird nur auf diesem Gerät gelesen und nirgends hochgeladen.</p>
+      <div class="imp" id="imp" hidden>
+        <div class="row opts">
+          <label class="fld">Stimme <select id="impSel"></select></label>
+          <label class="fld">Takt von <input type="number" id="impFrom" min="0"></label>
+          <label class="fld">bis <input type="number" id="impTo" min="0"></label>
+          <label class="fld">Bei Akkorden <select id="impMode"><option value="top">oberste Note</option><option value="bottom">unterste Note</option></select></label>
+        </div>
+        <div class="row"><button class="btn primary" id="bImp">Noten übernehmen</button></div>
+      </div>
+    </div>
     <label class="lbl" for="melody">Melodie als Notennamen</label>
     <textarea id="melody" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
     <p class="hint">Noten mit Oktavzahl, durch Leerzeichen getrennt, zum Beispiel <span class="mono">C4 Dis4 G4</span>. Oktave 4 beginnt beim mittleren C. In der deutschen Schreibweise ist H das normale B und B das B♭. Das Beispiel ist «Alle meine Entchen».</p>
@@ -148,6 +177,10 @@ textarea{width:100%;font:500 15px/1.5 var(--f-mono);padding:10px 12px;border:1px
       <button class="btn primary" id="bLoad">Übernehmen</button>
       <button class="btn" id="bPlay">Vorspielen</button>
       <button class="btn" id="bRestart">Von vorn</button>
+    </div>
+    <div class="row">
+      <input type="text" id="pname" placeholder="Name des Stücks" aria-label="Name des Stücks" autocomplete="off" maxlength="60">
+      <button class="btn" id="bSave">Speichern</button>
     </div>
     <div class="row opts">
       <label class="rng" for="bpm">Tempo <input id="bpm" type="range" min="40" max="140" value="80"><span class="mono" id="bpmv">80</span></label>
@@ -251,6 +284,166 @@ function parseNote(tok, lang){
   if(L==='B' && lang==='de' && d!==0) return null;
   var m=12*(oc+1)+base+d;
   return (m>=21 && m<=108) ? m : null;
+}
+
+/* ---- Dateien lesen: MusicXML (.musicxml, .mxl) und MIDI ---- */
+function kids(el,name){
+  var r=[], c=el.childNodes;
+  for(var i=0;i<c.length;i++){ if(c[i].nodeType===1 && (!name || c[i].nodeName===name)) r.push(c[i]); }
+  return r;
+}
+function kid(el,name){
+  var c=el.childNodes;
+  for(var i=0;i<c.length;i++){ if(c[i].nodeType===1 && c[i].nodeName===name) return c[i]; }
+  return null;
+}
+function txt(el,name){ var k=kid(el,name); return k ? (k.textContent||'').trim() : ''; }
+
+// Liest MusicXML (score-partwise). Ergebnis: {title, parts:[{name, staves, events:{staff:[{mi,mn,start,pitches}]}}]}
+function parseMusicXml(text){
+  var doc=new DOMParser().parseFromString(text,'application/xml');
+  var root=doc.documentElement;
+  if(!root || root.nodeName!=='score-partwise') throw new Error('format');
+  var title='', w=kid(root,'work');
+  if(w) title=txt(w,'work-title');
+  if(!title) title=txt(root,'movement-title');
+  var names={}, pl=kid(root,'part-list');
+  if(pl) kids(pl,'score-part').forEach(function(sp){ names[sp.getAttribute('id')]=txt(sp,'part-name'); });
+  var BASE={C:0,D:2,E:4,F:5,G:7,A:9,B:11};
+  var parts=[];
+  kids(root,'part').forEach(function(p){
+    var div=1, staves=1, evs={};
+    kids(p,'measure').forEach(function(m,mi){
+      var raw=m.getAttribute('number'), mn=/^-?\d+$/.test(raw||'') ? parseInt(raw,10) : mi+1;
+      var pos=0, last=0, byKey={};
+      kids(m).forEach(function(n){
+        var nm=n.nodeName;
+        if(nm==='attributes'){
+          var d=parseFloat(txt(n,'divisions')); if(d>0) div=d;
+          var st=parseInt(txt(n,'staves'),10); if(st>0) staves=Math.max(staves,st);
+        } else if(nm==='backup'){ pos-=parseFloat(txt(n,'duration'))||0; if(pos<0) pos=0; }
+        else if(nm==='forward'){ pos+=parseFloat(txt(n,'duration'))||0; }
+        else if(nm==='note'){
+          var chord=!!kid(n,'chord'), grace=!!kid(n,'grace'), dur=parseFloat(txt(n,'duration'))||0;
+          var start= chord ? last : pos, pitch=kid(n,'pitch');
+          if(pitch && !grace){
+            var tiedStop=kids(n,'tie').some(function(t){ return t.getAttribute('type')==='stop'; });
+            if(!tiedStop){
+              var base=BASE[txt(pitch,'step')], oc=parseInt(txt(pitch,'octave'),10), alt=Math.round(parseFloat(txt(pitch,'alter'))||0);
+              if(base!==undefined && !isNaN(oc)){
+                var staff=parseInt(txt(n,'staff'),10)||1;
+                staves=Math.max(staves,staff);
+                var key=staff+':'+start, ev=byKey[key];
+                if(!ev){ ev={mi:mi,mn:mn,start:start,pitches:[]}; byKey[key]=ev; (evs[staff]=evs[staff]||[]).push(ev); }
+                ev.pitches.push(12*(oc+1)+base+alt);
+              }
+            }
+          }
+          if(!chord && !grace){ last=pos; pos+=dur; }
+        }
+      });
+    });
+    Object.keys(evs).forEach(function(s){
+      evs[s].sort(function(a,b){ return a.mi-b.mi || a.start-b.start; });
+    });
+    var id=p.getAttribute('id');
+    parts.push({name:names[id]||'', staves:staves, events:evs});
+  });
+  return {title:title, parts:parts};
+}
+// Eine Notenzeile eines Parts als Liste von MIDI-Nummern, Takte from..to (inklusive).
+function extractXml(part, staff, from, to, mode){
+  var ev=part.events[staff]||[];
+  return ev.filter(function(e){ return e.mn>=from && e.mn<=to; }).map(function(e){
+    return mode==='bottom' ? Math.min.apply(null,e.pitches) : Math.max.apply(null,e.pitches);
+  });
+}
+// Liest eine MIDI-Datei. Ergebnis: {tpq, ts:{num,den}, tracks:[{name, notes:[{tick,note}]}]}
+function parseMidi(buf){
+  var u8=new Uint8Array(buf), dv=new DataView(buf), p=0;
+  function u32(){ var v=dv.getUint32(p); p+=4; return v; }
+  function u16(){ var v=dv.getUint16(p); p+=2; return v; }
+  if(String.fromCharCode(u8[0],u8[1],u8[2],u8[3])!=='MThd') throw new Error('format');
+  p=4; var hl=u32(); u16(); var nt=u16(), div=u16(); p=8+hl;
+  var tpq=(div&0x8000) ? 480 : div, ts={num:4,den:4}, tsSet=false, tracks=[];
+  for(var t=0; t<nt && p+8<=u8.length; t++){
+    if(String.fromCharCode(u8[p],u8[p+1],u8[p+2],u8[p+3])!=='MTrk') break;
+    p+=4;
+    var len=u32(), end=Math.min(p+len,u8.length), tick=0, run=0, name='', notes=[];
+    while(p<end){
+      var d=0, b;
+      do{ b=u8[p++]; d=d*128+(b&0x7f); }while((b&0x80) && p<end);
+      tick+=d;
+      var s=u8[p];
+      if(s===0xFF){
+        var type=u8[p+1]; p+=2;
+        var l=0; do{ b=u8[p++]; l=l*128+(b&0x7f); }while((b&0x80) && p<end);
+        if(type===0x03) name=String.fromCharCode.apply(null,u8.subarray(p,p+l));
+        if(type===0x58 && !tsSet && l>=2){ ts={num:u8[p],den:Math.pow(2,u8[p+1])}; tsSet=true; }
+        p+=l; run=0; continue;
+      }
+      if(s===0xF0 || s===0xF7){
+        p++; var l2=0; do{ b=u8[p++]; l2=l2*128+(b&0x7f); }while((b&0x80) && p<end);
+        p+=l2; run=0; continue;
+      }
+      var st;
+      if(s&0x80){ st=s; p++; run=s; } else { st=run; }
+      var hi=st&0xF0, ch=st&0x0F;
+      if(hi===0xC0 || hi===0xD0){ p+=1; }
+      else { var a=u8[p], v=u8[p+1]; p+=2; if(hi===0x90 && v>0 && ch!==9) notes.push({tick:tick,note:a}); }
+    }
+    p=end;
+    tracks.push({name:name.trim(), notes:notes});
+  }
+  return {tpq:tpq, ts:ts, tracks:tracks};
+}
+function midiMeasureLen(m){ return m.tpq*4*m.ts.num/m.ts.den; }
+function extractMidi(m, track, from, to, mode){
+  var ml=midiMeasureLen(m), by={}, ticks=[];
+  track.notes.forEach(function(n){
+    var mn=Math.floor(n.tick/ml)+1;
+    if(mn<from || mn>to) return;
+    if(!by[n.tick]){ by[n.tick]=[]; ticks.push(n.tick); }
+    by[n.tick].push(n.note);
+  });
+  ticks.sort(function(a,b){ return a-b; });
+  return ticks.map(function(t){ return mode==='bottom' ? Math.min.apply(null,by[t]) : Math.max.apply(null,by[t]); });
+}
+// Minimaler ZIP-Leser für .mxl. Gibt {files, read(name)} zurück. Braucht DecompressionStream.
+async function unzipFiles(buf){
+  var u8=new Uint8Array(buf), dv=new DataView(buf), e=-1;
+  for(var i=u8.length-22; i>=Math.max(0,u8.length-65557); i--){ if(dv.getUint32(i,true)===0x06054b50){ e=i; break; } }
+  if(e<0) throw new Error('format');
+  var n=dv.getUint16(e+10,true), p=dv.getUint32(e+16,true), files={};
+  for(var k=0;k<n;k++){
+    if(dv.getUint32(p,true)!==0x02014b50) break;
+    var method=dv.getUint16(p+10,true), csize=dv.getUint32(p+20,true);
+    var nl=dv.getUint16(p+28,true), xl=dv.getUint16(p+30,true), cl=dv.getUint16(p+32,true), lho=dv.getUint32(p+42,true);
+    var name=new TextDecoder().decode(u8.subarray(p+46,p+46+nl));
+    files[name]={method:method, csize:csize, lho:lho};
+    p+=46+nl+xl+cl;
+  }
+  return {files:files, read:async function(name){
+    var f=files[name], lp=f.lho;
+    var start=lp+30+dv.getUint16(lp+26,true)+dv.getUint16(lp+28,true);
+    var data=u8.subarray(start,start+f.csize);
+    if(f.method===0) return data;
+    if(f.method!==8) throw new Error('format');
+    var stream=new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }};
+}
+async function readMxl(buf){
+  var z=await unzipFiles(buf), root=null, dec=new TextDecoder();
+  if(z.files['META-INF/container.xml']){
+    var m=/full-path="([^"]+)"/.exec(dec.decode(await z.read('META-INF/container.xml')));
+    if(m) root=m[1];
+  }
+  if(!root || !z.files[root]){
+    root=Object.keys(z.files).filter(function(n){ return /\.(xml|musicxml)$/i.test(n) && n.indexOf('META-INF/')!==0; })[0];
+  }
+  if(!root) throw new Error('format');
+  return dec.decode(await z.read(root));
 }
 //#pure-end
 
@@ -391,7 +584,7 @@ window.addEventListener('pointercancel',pup);
 
 var PC={KeyA:0,KeyW:1,KeyS:2,KeyE:3,KeyD:4,KeyF:5,KeyT:6,KeyG:7,KeyY:8,KeyH:9,KeyU:10,KeyJ:11,KeyK:12,KeyO:13,KeyL:14,KeyP:15,Semicolon:16};
 var pcDown=new Map();
-function typing(t){ return t && (t.tagName==='TEXTAREA' || (t.tagName==='INPUT' && t.type==='text')); }
+function typing(t){ return t && (t.tagName==='TEXTAREA' || t.tagName==='SELECT' || (t.tagName==='INPUT' && (t.type==='text' || t.type==='number'))); }
 window.addEventListener('keydown',function(e){
   if(e.repeat||e.ctrlKey||e.metaKey||e.altKey||typing(e.target)) return;
   var o=PC[e.code]; if(o===undefined) return;
@@ -632,6 +825,145 @@ $('#bHint').addEventListener('click',function(){
 });
 $('#bSkip').addEventListener('click',newNote);
 
+/* ---------- Meine Stücke (nur im Speicher dieses Geräts) ---------- */
+var pieces=[];
+try{
+  var pj=JSON.parse(store.get('uk-pieces')||'[]');
+  if(Array.isArray(pj)) pieces=pj.filter(function(x){ return x && typeof x.name==='string' && Array.isArray(x.notes); });
+}catch(e){}
+function savePieces(){ store.set('uk-pieces',JSON.stringify(pieces)); }
+function renderPieces(sel){
+  var el=$('#pieceSel'); el.textContent='';
+  var o=document.createElement('option'); o.value='';
+  o.textContent= pieces.length ? '– Stück wählen –' : '– noch keine Stücke gespeichert –';
+  el.appendChild(o);
+  pieces.forEach(function(p,i){
+    var op=document.createElement('option'); op.value=i;
+    op.textContent=p.name+' ('+p.notes.length+' Noten)';
+    el.appendChild(op);
+  });
+  el.value= sel===undefined ? '' : String(sel);
+}
+function notesToText(list){ return list.map(noteName).join(' '); }
+$('#pieceSel').addEventListener('change',function(){
+  var i=parseInt(this.value,10);
+  if(isNaN(i) || !pieces[i]) return;
+  $('#melody').value=notesToText(pieces[i].notes);
+  $('#pname').value=pieces[i].name;
+  loadMelody();
+  $('#songMsg').textContent='«'+pieces[i].name+'» geladen. Spiel die markierte Taste.';
+});
+$('#bSave').addEventListener('click',function(){
+  var name=$('#pname').value.trim();
+  if(!name){ $('#songMsg').textContent='Gib dem Stück zuerst einen Namen.'; return; }
+  loadMelody();
+  if(!song.notes.length) return;
+  var entry={name:name,notes:song.notes.slice()}, idx=-1;
+  pieces.forEach(function(p,i){ if(p.name===name) idx=i; });
+  if(idx>=0) pieces[idx]=entry; else { pieces.push(entry); idx=pieces.length-1; }
+  savePieces(); renderPieces(idx);
+  $('#songMsg').textContent='«'+name+'» gespeichert ('+entry.notes.length+' Noten). Es bleibt auf diesem Gerät.';
+});
+var delTimer=null;
+$('#bDel').addEventListener('click',function(){
+  var i=parseInt($('#pieceSel').value,10), btn=this;
+  if(isNaN(i) || !pieces[i]){ $('#songMsg').textContent='Wähl zuerst ein gespeichertes Stück.'; return; }
+  if(btn.dataset.sure!=='1'){
+    btn.dataset.sure='1'; btn.textContent='Wirklich löschen?';
+    clearTimeout(delTimer);
+    delTimer=setTimeout(function(){ btn.dataset.sure=''; btn.textContent='Löschen'; },4000);
+    return;
+  }
+  clearTimeout(delTimer); btn.dataset.sure=''; btn.textContent='Löschen';
+  var nm=pieces[i].name;
+  pieces.splice(i,1); savePieces(); renderPieces();
+  $('#songMsg').textContent='«'+nm+'» gelöscht.';
+});
+
+/* ---------- Datei laden ---------- */
+var imp=null;   // {kind:'xml'|'midi', title, fileName, data, items:[...]}
+function friendly(e){
+  var m=e && e.message;
+  if(m==='nods') return 'Dieser Browser kann komprimierte Dateien (.mxl) nicht öffnen. Speichere das Stück in MuseScore als unkomprimierte .musicxml-Datei oder als MIDI.';
+  if(m==='format') return 'Dieses Dateiformat kenne ich nicht. Ich lese MusicXML (.mxl, .musicxml) und MIDI (.mid).';
+  return 'Die Datei konnte nicht gelesen werden.';
+}
+function defaultRange(it){
+  $('#impFrom').min=it.min; $('#impFrom').max=it.max;
+  $('#impTo').min=it.min; $('#impTo').max=it.max;
+  $('#impFrom').value=it.min;
+  $('#impTo').value=Math.min(it.max,it.min+7);
+}
+function fillImport(){
+  var sel=$('#impSel'); sel.textContent='';
+  imp.items.forEach(function(it,i){
+    var o=document.createElement('option'); o.value=i;
+    o.textContent=it.label+' · '+it.count+' Noten';
+    sel.appendChild(o);
+  });
+  defaultRange(imp.items[0]);
+  $('#imp').hidden=false;
+}
+async function importFile(fileName,buf){
+  var u8=new Uint8Array(buf), items=[], i;
+  imp=null; $('#imp').hidden=true;
+  if(u8[0]===0x4D && u8[1]===0x54 && u8[2]===0x68 && u8[3]===0x64){
+    var mid=parseMidi(buf), ml=midiMeasureLen(mid);
+    mid.tracks.forEach(function(t,ti){
+      if(!t.notes.length) return;
+      var lastTick=0; t.notes.forEach(function(n){ if(n.tick>lastTick) lastTick=n.tick; });
+      items.push({track:ti,label:t.name||('Spur '+(ti+1)),count:t.notes.length,min:1,max:Math.floor(lastTick/ml)+1});
+    });
+    imp={kind:'midi',title:'',fileName:fileName,data:mid,items:items};
+  } else {
+    var text;
+    if(u8[0]===0x50 && u8[1]===0x4B){
+      if(typeof DecompressionStream==='undefined') throw new Error('nods');
+      text=await readMxl(buf);
+    } else text=new TextDecoder().decode(buf);
+    var xml=parseMusicXml(text);
+    xml.parts.forEach(function(p,pi){
+      for(var s=1;s<=p.staves;s++){
+        var ev=p.events[s]||[];
+        if(!ev.length) continue;
+        var mn=1e9, mx=-1e9;
+        ev.forEach(function(e){ if(e.mn<mn) mn=e.mn; if(e.mn>mx) mx=e.mn; });
+        var label=(p.name||('Stimme '+(pi+1)))+(p.staves>1 ? ' – Notensystem '+s+(s===1?' (oben)':' (unten)') : '');
+        items.push({part:pi,staff:s,label:label,count:ev.length,min:mn,max:mx});
+      }
+    });
+    imp={kind:'xml',title:xml.title,fileName:fileName,data:xml,items:items};
+  }
+  if(!items.length){ imp=null; $('#fileMsg').textContent='In der Datei habe ich keine Noten gefunden.'; return; }
+  fillImport();
+  $('#fileMsg').textContent='«'+fileName+'» gelesen. Wähl die Stimme und die Takte, dann tippe auf «Noten übernehmen».';
+}
+$('#fileIn').addEventListener('change',function(){
+  var input=this, f=input.files && input.files[0];
+  if(!f) return;
+  $('#fileMsg').textContent='Lese «'+f.name+'» …';
+  f.arrayBuffer().then(function(buf){ return importFile(f.name,buf); }).catch(function(err){
+    imp=null; $('#imp').hidden=true; $('#fileMsg').textContent=friendly(err);
+  }).then(function(){ input.value=''; });
+});
+$('#impSel').addEventListener('change',function(){ if(imp) defaultRange(imp.items[+this.value]); });
+$('#bImp').addEventListener('click',function(){
+  if(!imp) return;
+  var it=imp.items[+$('#impSel').value];
+  var from=parseInt($('#impFrom').value,10), to=parseInt($('#impTo').value,10), mode=$('#impMode').value;
+  if(isNaN(from)) from=it.min;
+  if(isNaN(to)) to=it.max;
+  if(to<from){ var tmp=from; from=to; to=tmp; }
+  var list= imp.kind==='xml'
+    ? extractXml(imp.data.parts[it.part],it.staff,from,to,mode)
+    : extractMidi(imp.data,imp.data.tracks[it.track],from,to,mode);
+  if(!list.length){ $('#fileMsg').textContent='In diesen Takten gibt es keine Noten. Wähl einen anderen Bereich.'; return; }
+  $('#melody').value=notesToText(list);
+  $('#pname').value=(imp.title||imp.fileName.replace(/\.[^.]+$/,'')).slice(0,60);
+  loadMelody();
+  $('#fileMsg').textContent=list.length+' Noten aus Takt '+from+' bis '+to+' übernommen. Zum Behalten unten einen Namen eingeben und «Speichern» tippen.';
+});
+
 /* ---------- Modi, Einstellungen ---------- */
 function setMode(name){
   stopPlay(true);
@@ -666,6 +998,7 @@ $('#lDe').setAttribute('aria-pressed',lang==='de'?'true':'false');
 $('#lEn').setAttribute('aria-pressed',lang==='en'?'true':'false');
 buildKeys();
 renderScore();
+renderPieces();
 })();
 </script>
 

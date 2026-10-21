@@ -1,5 +1,5 @@
 // Offline-Betrieb: App-Dateien beim ersten Besuch ablegen, Schriften nachladen und merken.
-const CACHE = 'uebungsklavier-v1';
+const CACHE = 'uebungsklavier-v2';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
